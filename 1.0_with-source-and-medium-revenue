@@ -1,0 +1,67 @@
+WITH first_visits AS (
+  SELECT
+    COALESCE(user_id, user_pseudo_id) AS customer_id,
+    TIMESTAMP_MICROS(event_timestamp) AS first_visit_timestamp,
+    DATE(TIMESTAMP_MICROS(event_timestamp)) AS first_visit_date,
+    traffic_source.source AS first_visit_source,
+    traffic_source.medium AS first_visit_medium,
+    traffic_source.name AS first_visit_campaign,
+    
+    -- Pick the earliest first_visit per customer
+    ROW_NUMBER() OVER (
+      PARTITION BY COALESCE(user_id, user_pseudo_id) 
+      ORDER BY event_timestamp ASC
+    ) AS visit_rn
+  FROM
+    `enter.tablename_123456.events_*`
+  WHERE
+    _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
+    AND event_name = 'first_visit'
+),
+
+first_purchases AS (
+  SELECT
+    COALESCE(user_id, user_pseudo_id) AS customer_id,
+    ecommerce.transaction_id AS order_id,
+    ecommerce.purchase_revenue AS revenue,
+    TIMESTAMP_MICROS(event_timestamp) AS purchase_timestamp,
+    DATE(TIMESTAMP_MICROS(event_timestamp)) AS purchase_date,
+    
+    -- Pick the earliest purchase per customer
+    ROW_NUMBER() OVER (
+      PARTITION BY COALESCE(user_id, user_pseudo_id) 
+      ORDER BY event_timestamp ASC
+    ) AS purchase_rn
+  FROM
+    `enter.tablename_123456.events_*`
+  WHERE
+    _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
+    AND event_name = 'purchase'
+    AND ecommerce.transaction_id IS NOT NULL
+)
+
+SELECT
+  v.customer_id,
+  v.first_visit_date,
+  v.first_visit_source,
+  v.first_visit_medium,
+  v.first_visit_campaign,
+  p.order_id,
+  p.purchase_date,
+  p.revenue,
+  
+  -- Time Lag Calculations
+  DATE_DIFF(p.purchase_date, v.first_visit_date, DAY) AS days_to_purchase,
+  TIMESTAMP_DIFF(p.purchase_timestamp, v.first_visit_timestamp, HOUR) AS hours_to_purchase
+FROM
+  first_visits v
+INNER JOIN
+  first_purchases p
+    ON v.customer_id = p.customer_id
+WHERE
+  v.visit_rn = 1
+  AND p.purchase_rn = 1
+  AND p.purchase_timestamp >= v.first_visit_timestamp
+ORDER BY
+  days_to_purchase DESC,
+  hours_to_purchase DESC;
